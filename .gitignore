@@ -1,0 +1,11 @@
+/training/
+/output/
+/.venv/
+/venv/
+/.wslvenv/
+/logs/
+/model/
+/modelw/
+/models/
+/modelout/
+/__pycache__/

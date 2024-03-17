@@ -1,0 +1,4 @@
+tensorflow==2.15
+numpy
+scipy
+tqdm
