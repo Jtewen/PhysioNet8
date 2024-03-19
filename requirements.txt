@@ -1,4 +1,4 @@
-tensorflow==2.15
+tensorflow[and-cuda]==2.15
 numpy
 scipy
 tqdm
