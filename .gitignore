@@ -9,3 +9,6 @@
 /models/
 /modelout/
 /__pycache__/
+/multiclass_out/
+/attn_out/
+/wslout/
