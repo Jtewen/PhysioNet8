@@ -1,7 +1,9 @@
 import os
 import numpy as np
 import csv
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow warnings
 import tensorflow as tf
+tf.get_logger().setLevel('ERROR')
 
 # from matplotlib import pyplot as plt
 import deep_utils
@@ -13,9 +15,10 @@ from keras_self_attention import SeqSelfAttention
 
 
 
-def train_12ECG_classifier(input_directory, output_directory):
+def train_12ECG_classifier_attn(input_directory, output_directory):
 
     tf.compat.v1.disable_eager_execution()
+
 
     seed = 0
     np.random.seed(seed)
@@ -108,7 +111,7 @@ def train_12ECG_classifier(input_directory, output_directory):
         data_sexes = []
         data_labels = []
 
-        for i in tqdm(range(num_files), "Loading data..."):
+        for i in tqdm(range(num_files // 100), "Loading data..."):
             recording, header = deep_utils.load_challenge_data(header_files[i])
 
             if recording.shape[0] != 12:
@@ -227,6 +230,7 @@ def train_12ECG_classifier(input_directory, output_directory):
 
     KEEP_PROB = tf.compat.v1.placeholder_with_default(1.0, (), "KEEP_PROB")
 
+    # First branch
     e1 = tf.compat.v1.layers.conv1d(
         X, 48, 9, strides=4, padding="valid", activation=tf.nn.relu, use_bias=True
     )
@@ -247,60 +251,55 @@ def train_12ECG_classifier(input_directory, output_directory):
         2,
     )
 
-    print(e5_0.shape)
-
     emb1 = keras.layers.Bidirectional(
         keras.layers.LSTM(128, recurrent_dropout=0.5, return_sequences=False)
     )(e5_0)
 
-    e1 = tf.compat.v1.layers.conv1d(
+    # Second branch
+    e1_2 = tf.compat.v1.layers.conv1d(
         X, 48, 19, strides=4, padding="valid", activation=tf.nn.relu, use_bias=True
     )
-    e2 = tf.compat.v1.layers.conv1d(
-        e1, 64, 15, strides=3, activation=tf.nn.relu, use_bias=True
+    e2_2 = tf.compat.v1.layers.conv1d(
+        e1_2, 64, 15, strides=3, activation=tf.nn.relu, use_bias=True
     )
-    e3 = tf.compat.v1.layers.conv1d(
-        e2, 80, 11, strides=2, activation=tf.nn.relu, use_bias=True
+    e3_2 = tf.compat.v1.layers.conv1d(
+        e2_2, 80, 11, strides=2, activation=tf.nn.relu, use_bias=True
     )
-    e4 = tf.compat.v1.layers.conv1d(
-        e3, 96, 9, strides=2, activation=tf.nn.relu, use_bias=True
+    e4_2 = tf.compat.v1.layers.conv1d(
+        e3_2, 96, 9, strides=2, activation=tf.nn.relu, use_bias=True
     )
-    e5_0 = tf.compat.v1.layers.max_pooling1d(
+    e5_0_2 = tf.compat.v1.layers.max_pooling1d(
         tf.compat.v1.layers.conv1d(
-            e4, 112, 7, strides=2, activation=tf.nn.relu, use_bias=True
+            e4_2, 112, 7, strides=2, activation=tf.nn.relu, use_bias=True
         ),
         2,
         2,
     )
 
-    print(e5_0.shape)
-
     emb2 = keras.layers.Bidirectional(
         keras.layers.LSTM(128, recurrent_dropout=0.5, return_sequences=False)
-    )(e5_0)
+    )(e5_0_2)
 
-    lstm_emb = tf.concat([emb1, emb2, AGE, SEX], axis=1)
-    
-    attention_layer = SeqSelfAttention(attention_activation='sigmoid')(lstm_emb)
+    # Attention mechanism for the first branch
+    e5_0_projected = tf.keras.layers.Dense(256)(e5_0)
 
-    emb = tf.concat([emb, attention_layer], axis=1)
+    attention_emb1 = tf.keras.layers.Attention()([e5_0_projected, emb1])
 
+    # Attention mechanism for the second branch
+    e5_0_2_projected = tf.keras.layers.Dense(256)(e5_0_2)
+    attention_emb2 = tf.keras.layers.Attention()([e5_0_2_projected, emb2])
 
-    logs = []
-    preds = []
-    for i in range(num_classes):
-        e6 = tf.nn.dropout(
-            tf.compat.v1.layers.dense(emb, 100, activation=tf.nn.relu),
-            rate=1 - (KEEP_PROB),
-        )
-        log_ = tf.compat.v1.layers.dense(e6, 1)
-        pred_ = tf.nn.sigmoid(log_)
-        logs.append(log_)
-        preds.append(pred_)
+    # Concatenate attended outputs with additional features
+    AGE_reshaped = tf.tile(tf.expand_dims(AGE, axis=1), [1, 1, 256])
+    SEX_reshaped = tf.tile(tf.expand_dims(SEX, axis=1), [1, 1, 256])
+    emb = tf.concat([attention_emb1, attention_emb2, AGE_reshaped, SEX_reshaped], axis=1)
+    print("emb shape:", emb.shape)
+    flattened_emb = tf.keras.layers.Flatten()(emb)
+    print("flattened_emb shape:", flattened_emb.shape)
 
-    logits = tf.concat(logs, 1, name="out")
-    pred = tf.concat(preds, 1, name="out_a")
-
+    # Define the dense layer for logits using the flattened tensor
+    logits = tf.compat.v1.layers.dense(flattened_emb, num_classes, activation=None)
+    print("logits shape:", logits.shape)
     # gradient reversal for Domain Generalization:
     e5_p = tf.stop_gradient((1.0 + lambdaa_DG) * emb)
     e5_n = -lambdaa_DG * emb
@@ -308,31 +307,28 @@ def train_12ECG_classifier(input_directory, output_directory):
     e6_d = tf.nn.dropout(
         tf.compat.v1.layers.dense(e5_d, 64, activation=tf.nn.relu), rate=1 - (KEEP_PROB)
     )
-    logits_d = tf.compat.v1.layers.dense(e6_d, len(ref_domains))
+    e6_d_flattened = tf.keras.layers.Flatten()(e6_d)
+    logits_d = tf.compat.v1.layers.dense(e6_d_flattened, len(ref_domains))
+    print("logits_d shape:", logits_d.shape)
 
+    # Calculate the number of trainable parameters
     tr_vars = tf.compat.v1.trainable_variables()
-    trainable_params = 0
-    for i in range(len(tr_vars)):
-        tmp = 1
-        for j in tr_vars[i].get_shape().as_list():
-            tmp *= j
-        trainable_params += tmp
+    trainable_params = sum(np.prod(v.get_shape().as_list()) for v in tr_vars)
     print("# trainable parameters: ", trainable_params)
 
+    # Calculate the loss
     MASK = tf.multiply(Y_W, D_M)
-
     Loss = tf.reduce_mean(
         tf.multiply(
             MASK, tf.nn.sigmoid_cross_entropy_with_logits(logits=logits, labels=Y)
         )
     )
-    
     Loss_d = tf.reduce_mean(
         tf.nn.softmax_cross_entropy_with_logits(logits=logits_d, labels=Y_D)
     )
 
+    # Define the optimizer
     opt = tf.compat.v1.train.AdamOptimizer(learning_rate=learning_rate)
-
     train_opt = opt.minimize(Loss + lambdaa_d * Loss_d)
 
     config = tf.compat.v1.ConfigProto()
@@ -353,7 +349,6 @@ def train_12ECG_classifier(input_directory, output_directory):
     def evaluate(data_x, data_y, data_m, data_a, data_s):
         loss_ce = []
         out = []
-
         n_b = len(data_y) // batch_size
 
         for bb in range(n_b):
@@ -372,7 +367,7 @@ def train_12ECG_classifier(input_directory, output_directory):
             batch_age = data_a[bb * batch_size : (bb + 1) * batch_size]
             batch_sex = data_s[bb * batch_size : (bb + 1) * batch_size]
             loss_ce_, out_ = sess.run(
-                [Loss, "out_a:0"],
+                [Loss, logits],
                 feed_dict={
                     X: batch_data,
                     Y: batch_label,
@@ -465,7 +460,9 @@ def train_12ECG_classifier(input_directory, output_directory):
                 continue
 
             ################# validation  ######################
-            if step % n_step == 0:
+            if True:
+                print("val_data", len(val_data))
+                
 
                 out, loss_ce = evaluate(
                     val_data,
@@ -474,6 +471,9 @@ def train_12ECG_classifier(input_directory, output_directory):
                     data_ages[val_inds].copy(),
                     data_sexes[val_inds].copy(),
                 )
+                print("out", out)
+                print("loss_ce", loss_ce)
+                print("threshold", threshold)
 
                 labels_ = out > threshold
                 labels_ = labels_.astype(int)

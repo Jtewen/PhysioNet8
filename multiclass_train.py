@@ -11,7 +11,7 @@ from tensorflow import keras
 from tqdm import tqdm
 
 
-def train_12ECG_classifier(input_directory, output_directory):
+def train_12ECG_classifier_multiclass(input_directory, output_directory):
 
     tf.compat.v1.disable_eager_execution()
 
@@ -340,7 +340,7 @@ def train_12ECG_classifier(input_directory, output_directory):
 
     opt = tf.compat.v1.train.AdamOptimizer(learning_rate=learning_rate)
     alpha = 1
-    beta, gamma, delta = 0.1, 0.1, 0.1
+    beta, gamma, delta = 0.1, 0.3, 0.3
     train_opt = opt.minimize(alpha * Loss + beta * Loss_d + gamma * Loss_a + delta * Loss_s)
 
     config = tf.compat.v1.ConfigProto()
@@ -386,8 +386,8 @@ def train_12ECG_classifier(input_directory, output_directory):
                     Y: batch_label,
                     Y_W: batch_weight,
                     D_M: batch_mask,
-                    AGE: batch_age,
-                    SEX: batch_sex,
+                    AGE_LABELS: batch_age,
+                    SEX_LABELS: batch_sex,
                 },
             )
 
@@ -462,18 +462,15 @@ def train_12ECG_classifier(input_directory, output_directory):
                 KEEP_PROB: 0.5,
                 D_M: batch_mask,
                 Y_D: batch_domain,
-                AGE_LABELS: batch_age_labels,
-                SEX_LABELS: batch_sex_labels
+                AGE_LABELS: batch_age,
+                SEX_LABELS: batch_sex
             }
             sess.run(train_opt, feed)
 
             step += 1
 
-            if epoch < 20:
-                continue
-
             ################# validation  ######################
-            if step % n_step == 0:
+            if step % n_step == 0 and epoch > 20:
 
                 out, loss_ce = evaluate(
                     val_data,

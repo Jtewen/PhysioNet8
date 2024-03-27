@@ -14,6 +14,12 @@ from tensorflow.keras.layers import Concatenate
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Dense, Dropout, Conv1D, MaxPooling1D, Bidirectional, LSTM, Concatenate
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.metrics import Metric
+from keras import backend as K
+from functools import partial
+
+
+
 
 
 
@@ -165,7 +171,7 @@ def train_12ECG_classifier(input_directory, output_directory):
     # Creating datasets
     num_classes = len(class_names)
 
-    val_size = int(0.2 * len(header_files))  # Assuming 20% for validation
+    val_size = int(0.1 * len(header_files))  # Assuming 20% for validation
     val_files = header_files[:val_size]
     train_files = header_files[val_size:]
 
@@ -223,11 +229,51 @@ def train_12ECG_classifier(input_directory, output_directory):
     
     model = create_model(input_shape=(Length, 12), num_classes=len(class_names), dropout_rate=0.5, num_domains=len(ref_domains))
 
-    model.compile(optimizer=Adam(1.2e-3),
-                  loss={'class_output': 'categorical_crossentropy', 'domain_output': 'categorical_crossentropy'},
-                  metrics={'class_output': 'f1_score'})
+    def custom_sigmoid_cross_entropy_with_logits(y_true, y_pred):
+        loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=y_true, logits=y_pred)
+        return tf.reduce_mean(loss)
     
-    print("Shape of train_dataset:", train_dataset)
+
+    def recall_m_factory(threshold):
+        def recall_m(y_true, y_pred):
+            true_positives = K.sum(K.round(K.clip(y_true * K.cast(y_pred >= threshold, 'float32'), 0, 1)))
+            possible_positives = K.sum(K.round(K.clip(y_true, 0, 1)))
+            recall = true_positives / (possible_positives + K.epsilon())
+            return recall
+        recall_m.__name__ = 'recall_m_{}'.format(threshold)
+        return recall_m
+
+    def precision_m_factory(threshold):
+        def precision_m(y_true, y_pred):
+            true_positives = K.sum(K.round(K.clip(y_true * K.cast(y_pred >= threshold, 'float32'), 0, 1)))
+            predicted_positives = K.sum(K.round(K.clip(K.cast(y_pred >= threshold, 'float32'), 0, 1)))
+            precision = true_positives / (predicted_positives + K.epsilon())
+            return precision
+        precision_m.__name__ = 'precision_m_{}'.format(threshold)
+        return precision_m
+
+    def f1_m_factory(threshold):
+        def f1_m(y_true, y_pred):
+            precision = precision_m_factory(threshold)(y_true, y_pred)
+            recall = recall_m_factory(threshold)(y_true, y_pred)
+            return 2 * ((precision * recall) / (precision + recall + K.epsilon()))
+        f1_m.__name__ = 'f1_m_{}'.format(threshold)
+        return f1_m
+
+    threshold = tf.Variable(0.5, trainable=False, dtype=tf.float32)  # Initial threshold value
+
+    model.compile(
+        optimizer=Adam(1.2e-3),
+        loss={'class_output': custom_sigmoid_cross_entropy_with_logits, 'domain_output': 'categorical_crossentropy'},
+        loss_weights={'class_output': 1.0, 'domain_output': 0.1},
+        metrics={
+            'class_output': [
+                partial(f1_m_factory(threshold)),
+                'accuracy'
+            ],
+            'domain_output': 'accuracy'
+        }
+    )
 
     history = model.fit(train_dataset,
                         epochs=20,
