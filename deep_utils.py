@@ -1,7 +1,11 @@
+import pickle
+from typing import Iterable
 import numpy as np
 from scipy.signal import filtfilt, butter
 from scipy.io import loadmat
 import os
+import neurokit2 as nk
+import scipy.signal as signal
 
 
 
@@ -61,7 +65,7 @@ def find_domains(names):
     domains = []
     for i in range(len(names)):
         domains.append(names[i][:1])
-    ref_domains = list(set(domains))
+    ref_domains = sorted(list(set(domains)))
     
     domains = np.array(domains)
     
@@ -71,6 +75,27 @@ def find_domains(names):
         domains_int[inds] = i
         
     return domains_int
+
+def find_domains_with_counts(names):
+    domains = []
+    for name in names:
+        # Extract the domain identifier assumed to be the first character of each name
+        domains.append(name[:1])
+    
+    # Create a sorted list of unique domain identifiers
+    ref_domains = sorted(set(domains))
+    
+    # Initialize a dictionary to count occurrences of each domain
+    domain_counts = {domain: 0 for domain in ref_domains}
+    
+    # Count each domain's occurrences
+    for domain in domains:
+        domain_counts[domain] += 1
+    
+    # Collect counts in the order of ref_domains
+    counts = [domain_counts[domain] for domain in ref_domains]
+    
+    return ref_domains, counts
 
 
 def load_challenge_data(header_file):
@@ -254,4 +279,88 @@ def prepare_data(x, length, mod=0, scale=1000., clip1=-100., clip2=100., aug=Tru
             
     return data
 
+def prepare_data_clean(x, length, mod=0, scale=1000., clip1=-100., clip2=100., aug=False):
+    data = np.zeros((len(x), length, 12))
+    
+    for i in range(len(x)):
+        sig = x[i][mod::2].copy()
+        L = sig.shape[0]
+        st, end = find_st_end(L, length)
+        if L > length:
+            data[i] = sig[st: end]
+        else:
+            data[i, st: end] = sig
+            
+    data = np.clip(data / scale, clip1, clip2)
+    
+    return data
 
+
+def load_pickles(output_directory):
+    with open(os.path.join(output_directory, "data_signals.pkl"), "rb") as f:
+        data_signals = pickle.load(f)
+    with open(os.path.join(output_directory, "data_names.pkl"), "rb") as f:
+        data_names = pickle.load(f)
+    with open(os.path.join(output_directory, "data_ages.pkl"), "rb") as f:
+        data_ages = pickle.load(f)
+    with open(os.path.join(output_directory, "data_sexes.pkl"), "rb") as f:
+        data_sexes = pickle.load(f)
+    with open(os.path.join(output_directory, "data_labels.pkl"), "rb") as f:
+        data_labels = pickle.load(f)
+
+
+    return data_signals, data_names, data_ages, data_sexes, data_labels
+
+def load_shuffled_pickles(output_directory):
+    with open(os.path.join(output_directory, "shuffled_data_signals.pkl"), "rb") as f:
+        data_signals = pickle.load(f)
+    with open(os.path.join(output_directory, "shuffled_data_names.pkl"), "rb") as f:
+        data_names = pickle.load(f)
+    with open(os.path.join(output_directory, "shuffled_data_ages.pkl"), "rb") as f:
+        data_ages = pickle.load(f)
+    with open(os.path.join(output_directory, "shuffled_data_sexes.pkl"), "rb") as f:
+        data_sexes = pickle.load(f)
+    with open(os.path.join(output_directory, "shuffled_data_labels.pkl"), "rb") as f:
+        data_labels = pickle.load(f)
+        
+    return data_signals, data_names, data_sexes, data_ages, data_labels
+
+def shuffle_and_save_data(output_directory):
+    # Load all data from pickles
+    with open(os.path.join(output_directory, "data_signals.pkl"), "rb") as f:
+        data_signals = pickle.load(f)
+    with open(os.path.join(output_directory, "data_names.pkl"), "rb") as f:
+        data_names = pickle.load(f)
+    with open(os.path.join(output_directory, "data_ages.pkl"), "rb") as f:
+        data_ages = pickle.load(f)
+    with open(os.path.join(output_directory, "data_sexes.pkl"), "rb") as f:
+        data_sexes = pickle.load(f)
+    with open(os.path.join(output_directory, "data_labels.pkl"), "rb") as f:
+        data_labels = pickle.load(f)
+
+    
+    # Generate a single set of shuffled indices based on one array's length
+    indices = np.arange(len(data_signals))
+    np.random.shuffle(indices)
+    
+    # Reorder all arrays using the shuffled indices
+    data_signals = [data_signals[i] for i in indices]
+    data_names = [data_names[i] for i in indices]
+    data_ages = [data_ages[i] for i in indices]
+    data_sexes = [data_sexes[i] for i in indices]
+    data_labels = [data_labels[i] for i in indices]
+
+    
+    # Save the shuffled data back to pickle files
+    with open(os.path.join(output_directory, "shuffled_data_signals.pkl"), "wb") as f:
+        pickle.dump(data_signals, f)
+    with open(os.path.join(output_directory, "shuffled_data_names.pkl"), "wb") as f:
+        pickle.dump(data_names, f)
+    with open(os.path.join(output_directory, "shuffled_data_ages.pkl"), "wb") as f:
+        pickle.dump(data_ages, f)
+    with open(os.path.join(output_directory, "shuffled_data_sexes.pkl"), "wb") as f:
+        pickle.dump(data_sexes, f)
+    with open(os.path.join(output_directory, "shuffled_data_labels.pkl"), "wb") as f:
+        pickle.dump(data_labels, f)
+
+        

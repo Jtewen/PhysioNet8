@@ -3,80 +3,114 @@ import os
 import numpy as np
 from tqdm import tqdm
 import deep_utils
-import pickle  # Import pickle for serialization
+import pickle
 
-def preprocess_and_save_data(input_directory, target_length=5600, batch_size=100):
+def preprocess_and_save_data(input_directory, output_directory):
     with open("weights.csv") as fp:
         reader = csv.reader(fp, delimiter=",")
         data_read = [row for row in reader]
+
     class_names = data_read[0][1:]
-    header_files = [os.path.join(input_directory, f) for f in os.listdir(input_directory)
-                    if f.lower().endswith('hea') and not f.lower().startswith('.') and os.path.isfile(os.path.join(input_directory, f))]
+
+    num_classes = len(class_names)
+    print("Loading data from files...")
+    header_files = []
+    for f in tqdm(os.listdir(input_directory), "Preparing data..."):
+        g = os.path.join(input_directory, f)
+        if (
+            not f.lower().startswith(".")
+            and f.lower().endswith("hea")
+            and os.path.isfile(g)
+        ):
+            header_files.append(g)
     
-    dict_path = "training/preprocessed_data"
-    os.makedirs(dict_path, exist_ok=True)
+    num_files = len(header_files)
+    print("num files", num_files)
 
-    batch_data = []
-    batch_counter = 0
+    data_names, data_ages, data_sexes, data_labels, data_signals = [], [], [], [], []
 
-    for header_file in tqdm(header_files, desc="Preprocessing"):
-        recording, header_lines = next(deep_utils.load_challenge_data([header_file]))
-        fs = int(header_lines[0].split()[2])
-        recording = deep_utils.resample(recording, src_frq=fs, trg_frq=500) if fs != 500 else recording
+    header_files = [os.path.join(input_directory, f) for f in os.listdir(input_directory) 
+                    if not f.lower().startswith(".") and f.lower().endswith("hea") and os.path.isfile(os.path.join(input_directory, f))]
 
-        # Ensure recording is correctly sized (5600 time points, 12 leads)
-        if recording.shape[1] > target_length:
-            recording = recording[:, :target_length]
-        elif recording.shape[1] < target_length:
-            padding = target_length - recording.shape[1]
-            recording = np.pad(recording, ((0, 0), (0, padding)), 'constant', constant_values=0)
+    for i in tqdm(range(num_files), "Processing data..."):
+        recording, header = deep_utils.load_challenge_data(header_files[i])
 
-        # Verify recording shape matches expected input for prepare_data
-        assert recording.shape == (12, target_length), f"Recording shape mismatch: {recording.shape}"
+        if recording.shape[0] != 12:
+            print("Error in number of leads!", recording.shape)
+        
+        recording = recording.T.astype("float32")
 
-        # Reshape for prepare_data (expects (samples, time points, features))
-        recording = recording.T.reshape(1, target_length, 12)  # Transpose to (time points, leads), then reshape
+        name = header[0].strip().split(" ")[0]
 
-        age, sex, dx_codes = extract_patient_info(header_lines, class_names)
+        try:
+            samp_frq = int(header[0].strip().split(" ")[2])
+        except:
+            print("Error in reading sampling frequency!", header[0])
+            samp_frq = 500
 
-        # Process recording with prepare_data
-        processed_recording = deep_utils.prepare_data(recording, target_length, aug=True)[0]  # Process and extract the first item
+        if samp_frq != 257:
+            recording = deep_utils.resample(recording.copy(), samp_frq, 257)
 
-        batch_data.append((processed_recording, age, sex, dx_codes))
-        if len(batch_data) >= batch_size:
-            with open(os.path.join(dict_path, f"batch_{batch_counter}.pkl"), 'wb') as f:
-                pickle.dump(batch_data, f)
-            batch_data = []
-            batch_counter += 1
+        age = 50
+        sex = 0
+        label = np.zeros(num_classes, dtype="float32")
 
-    if batch_data:  # Save any remaining data
-        with open(os.path.join(dict_path, f"batch_{batch_counter}.pkl"), 'wb') as f:
-            pickle.dump(batch_data, f)
+        for l in header:
+            if l.startswith("# Age:"):
+                age_ = l.strip().split(" ")[2]
+                if age_ == "Nan" or age_ == "NaN":
+                    age = 50
+                else:
+                    try:
+                        age = int(age_)
+                    except:
+                        print("Error in reading age!", age_)
+                        age = 50
 
-    print("Preprocessing complete.")
+            if l.startswith("# Sex:"):
+                sex_ = l.strip().split(" ")[2]
+                if sex_ == "Male" or sex_ == "male":
+                    sex = 0
+                elif sex_ == "Female" or sex_ == "female":
+                    sex = 1
+                else:
+                    print("Error in reading sex!", sex_)
 
-def extract_patient_info(header_lines, class_names):
-    age = 50  # Default age
-    sex = 0  # Male
-    dx_codes = np.zeros(len(class_names), dtype="float32")  # Ensure consistency in dtype
+            if l.startswith("# Dx:"):
+                arrs = l.strip().split(" ")
+                for arr in arrs[2].split(","):
+                    try:
+                        class_index = class_names.index(arr.rstrip())
+                        label[class_index] = 1.0
+                    except:
+                        pass
+        if label.sum() < 1:
+            continue
 
-    for line in header_lines:
-        if line.startswith("# Age:"):
-            try:
-                age = int(line.split(":")[1].strip())
-            except ValueError:
-                age = 50  # Default age if parsing fails
-        elif line.startswith("# Sex:"):
-            sex_str = line.split(":")[1].strip()
-            sex = 0 if sex_str.lower() == 'male' else 1  # Male or Female
-        elif line.startswith("# Dx:"):
-            dx_str = line.split(":")[1].strip()
-            for dx in dx_str.split(","):
-                if dx in class_names:
-                    dx_index = class_names.index(dx)
-                    dx_codes[dx_index] = 1
+        data_names.append(name)
+        data_ages.append(age)
+        data_sexes.append(sex)
+        data_labels.append(label)
+        data_signals.append(recording)  # Transpose back to original shape if necessary
+        
+    if not os.path.exists(output_directory):
+        os.makedirs(output_directory)
+    # pickle and save data
+    with open(os.path.join(output_directory, "data_signals.pkl"), "wb") as f:
+        pickle.dump(data_signals, f)
+    with open(os.path.join(output_directory, "data_names.pkl"), "wb") as f:
+        pickle.dump(data_names, f)
+    with open(os.path.join(output_directory, "data_ages.pkl"), "wb") as f:
+        pickle.dump(data_ages, f)
+    with open(os.path.join(output_directory, "data_sexes.pkl"), "wb") as f:
+        pickle.dump(data_sexes, f)
+    with open(os.path.join(output_directory, "data_labels.pkl"), "wb") as f:
+        pickle.dump(data_labels, f)
 
-    return age, sex, dx_codes
+    print("Preprocessing complete. Data saved to:", output_directory)
 
 if __name__ == "__main__":
-    preprocess_and_save_data("training")
+    input_directory = "training/"
+    output_directory = "training/processed/"
+
+    preprocess_and_save_data(input_directory, output_directory)

@@ -52,7 +52,7 @@ def prepare_data(x, length, mod=0, scale=1000.0, clip1=-100.0, clip2=100.0):
 
 def run_12ECG_classifier(data, header_data, loaded_model):
 
-    Length = 5600
+    Length = 3000
 
     if data.shape[0] != 12:
         print("Error in number of leads!", data.shape)
@@ -67,8 +67,8 @@ def run_12ECG_classifier(data, header_data, loaded_model):
         print("Error while reading sampling frequency!", header_data[0])
         samp_frq = 500
 
-    if samp_frq != 500:
-        data = resample(data.copy(), samp_frq)
+    if samp_frq != 257:
+        data = resample(data.copy(), samp_frq, 257)
 
     age = 50
     sex = 0
@@ -132,7 +132,7 @@ def load_12ECG_model(input_directory):
     model = {}
 
     model["classes"] = np.load(input_directory + "/class_names.npy")
-    model["threshold"] = np.load(input_directory + "/threshold.npy")
+    model["threshold"] = np.load(input_directory + "/optimal_thresholds.npy")
 
     tf.compat.v1.reset_default_graph()
 

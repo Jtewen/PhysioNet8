@@ -3,13 +3,21 @@
 import os, sys
 import argparse
 from base_train import train_12ECG_classifier
-from multiclass_train import train_12ECG_classifier_multiclass
 from attn_train import train_12ECG_classifier_attn
-from tf2_keras3_refactor import train_12ECG_classifier as train_12ECG_classifier_refactor
+from intermediate_train import train_12ECG_classifier_intermediate
+from irm_train import train_12ECG_classifier_irm
+from multilevel_train import train_12ECG_classifier_multilevel
+from resnet2_train import train_12ECG_classifier_resnet2
+from resnet_train import train_12ECG_classifier_resnet
+from siamese_train import train_12ECG_classifier_siamese
+from tf2_keras3_refactor import train_12ECG_classifier_tf2
+from transformer_train import train_12ECG_classifier_transformer
+from baseline_train import train_12ECG_classifier_baseline
 
 def main(args):
     input_directory = args.input_directory
     output_directory = args.output_directory
+    load_directory = args.load
     version = args.version
 
     if not os.path.isdir(output_directory):
@@ -17,21 +25,8 @@ def main(args):
 
     print("Running training code...")
 
-    if version == 'base':
-        print("Training base model...")
-        train_12ECG_classifier(input_directory, output_directory)
-    elif version == 'multiclass':
-        print("Training multiclass model...")
-        train_12ECG_classifier_multiclass(input_directory, output_directory)
-    elif version == 'attn':
-        print("Training attention model...")
-        train_12ECG_classifier_attn(input_directory, output_directory)
-    elif version == 'refactor':
-        print("Training refactor model...")
-        train_12ECG_classifier_refactor(input_directory, output_directory)
-    else:
-        print("No version flag detected, training base model...")
-        train_12ECG_classifier(input_directory, output_directory)
+
+    train_12ECG_classifier_baseline(input_directory, output_directory)
 
     print("Done.")
 
@@ -39,6 +34,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('input_directory', type=str, help='Input directory')
     parser.add_argument('output_directory', type=str, help='Output directory')
+    parser.add_argument('--load', type=str, help='Model load directory')
     parser.add_argument('--version', type=str, default='base', help='Version of train_12ECG_classifier to use (base, multiclass, attn)')
     args = parser.parse_args()
 

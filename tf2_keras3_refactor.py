@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import Counter, defaultdict
 import os
 import numpy as np
 import csv
@@ -17,13 +17,14 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.metrics import Metric
 from keras import backend as K
 from functools import partial
+from tensorflow.keras.callbacks import Callback
 
 
 
 
 
 
-def train_12ECG_classifier(input_directory, output_directory):
+def train_12ECG_classifier_tf2(input_directory, output_directory):
 
     seed = 0
     np.random.seed(seed)
@@ -50,93 +51,8 @@ def train_12ECG_classifier(input_directory, output_directory):
     #######
 
     print("Loading data...")
+
     t0 = time()
-    
-    def collect_dataset_info(input_directory):
-        names = []
-        for f in tqdm(os.listdir(input_directory), "Collecting dataset info"):
-            if not f.lower().startswith(".") and f.lower().endswith("hea") and os.path.isfile(os.path.join(input_directory, f)):
-                with open(os.path.join(input_directory, f), 'r') as file:
-                    first_line = file.readline()
-                    name = first_line.split(' ')[0]  # Assuming name is the first word
-                    names.append(name)
-        data_domains = deep_utils.find_domains(names)
-        ref_domains = list(set(data_domains))  # Make sure find_domains works as intended
-
-        return data_domains, ref_domains
-
-
-# Call this function before initializing your datasets
-    data_domains, ref_domains = collect_dataset_info(input_directory)
-        
-    def load_and_process_data(file_path, class_names, num_classes, Length):
-        # Function to read and process each file individually.
-        # Returns processed signal, age, sex, label for each record.
-        file_path_str = file_path.decode("utf-8")  # Convert bytes to string
-
-        recording, header = deep_utils.load_challenge_data(file_path_str)
-        if recording.shape[0] != 12:
-            return None  # Or handle error appropriately
-        recording = recording.T.astype("float32")
-        name = header[0].strip().split(" ")[0]
-        try:
-            samp_frq = int(header[0].strip().split(" ")[2])
-        except Exception as e:
-            samp_frq = 500  # Default sampling frequency
-        if samp_frq != 500:
-            recording = deep_utils.resample(recording.copy(), samp_frq)
-        age, sex = 50, 0  # Default values
-        label = np.zeros(num_classes, dtype="float32")
-        # Parse header for age, sex, and labels
-        for l in header:
-            if l.startswith("# Age:"):
-                age_ = l.strip().split(" ")[2]
-                age = 50 if age_ in {"Nan", "NaN"} else int(age_)
-            elif l.startswith("# Sex:"):
-                sex_ = l.strip().split(" ")[2]
-                sex = 0 if sex_ in {"Male", "male", "M"} else 1 if sex_ in {"Female", "female", "F"} else 0
-            elif l.startswith("# Dx:"):
-                arrs = l.strip().split(" ")
-                for arr in arrs[2].split(","):
-                    try:
-                        class_index = class_names.index(arr.rstrip())
-                        label[class_index] = 1.0
-                    except:
-                        pass
-        processed_signal = deep_utils.prepare_data([recording], Length, mod=0)[0]
-        domain = deep_utils.find_domains([name])[0]
-        return processed_signal.T.astype("float32"), np.float32(age), np.float32(sex), label.T.astype("float32"), domain
-
-
-    def tf_dataset_from_files(file_paths, class_names, num_classes, Length, batch_size):
-        # Create a TF dataset from file paths and map the processing function.
-        # Note: Adjust the processing function to return tensors suitable for your model input and labels.
-        def load_map_fn(path):
-            processed_signal, age, sex, label, domain = tf.numpy_function(
-                func=load_and_process_data, 
-                inp=[path, class_names, num_classes, Length], 
-                Tout=[tf.float32, tf.float32, tf.float32, tf.float32, tf.uint8]
-            )
-            # Set shapes
-            processed_signal = tf.transpose(processed_signal)
-            processed_signal.set_shape((Length, 12))
-            age.set_shape(())
-            sex.set_shape(())
-            label.set_shape((num_classes,))
-            domain.set_shape(())  # Single integer representing domain
-
-            # Convert 'domain' to one-hot encoding inside TensorFlow graph
-            domain_one_hot = tf.one_hot(domain, depth=len(ref_domains))
-            # Structure the data to match the input and output names of your model
-            inputs = {'X': processed_signal, 'AGE': age, 'SEX': sex}
-            outputs = {'class_output': label, 'domain_output': domain_one_hot}
-            return inputs, outputs  # Return structured data
-        dataset = tf.data.Dataset.from_tensor_slices(file_paths)
-        dataset = dataset.map(load_map_fn, num_parallel_calls=tf.data.AUTOTUNE)
-
-        # Apply batching, prefetching for performance
-        dataset = dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
-        return dataset
 
     with open("weights.csv") as fp:
         reader = csv.reader(fp, delimiter=",")
@@ -151,45 +67,173 @@ def train_12ECG_classifier(input_directory, output_directory):
     np.save(output_directory + "/class_names.npy", class_names)
 
     num_classes = len(class_names)
-    # Collect header files
-    header_files = []
-    for f in os.listdir(input_directory):
-        g = os.path.join(input_directory, f)
-        if (
-            not f.lower().startswith(".")
-            and f.lower().endswith("hea")
-            and os.path.isfile(g)
-        ):
-            header_files.append(g)
+    print("Loading data from files...")
+    data_signals, data_names, data_ages, data_sexes, data_labels = deep_utils.load_shuffled_pickles("training/processed")
+    print("Data loaded successfully")
+    data_names = np.array(data_names)
+    data_ages = np.array(data_ages, dtype="float32")
+    data_sexes = np.array(data_sexes, dtype="float32")
+    data_labels = np.array(data_labels, dtype="float32")
 
-    num_files = len(header_files)
-    print("num files", num_files)   
+    data_domains = deep_utils.find_domains(data_names)
+
+    data_domains = np.array(data_domains)
+    
+    print("data_domains", len(data_domains))
+    
+    resampled_signals = []
+
+    for signal in data_signals:
+        resampled_signal = deep_utils.resample(signal, 500, 257)
+        resampled_signals.append(resampled_signal)
+
+    data_signals = resampled_signals
+    
+    ################################
+
+    test_names = np.load("test_val_names/test_names.npy")
+    val_names = np.load("test_val_names/val_names.npy")
+    test_inds = domain_4_inds = np.where(data_domains == 4)[0]
+    val_inds = np.where(np.in1d(data_names, val_names))[0]
+    train_inds = np.delete(
+        np.arange(len(data_names)), np.concatenate([test_inds, val_inds])
+    )
+    
+    domain_counts = Counter(data_domains)
+    print(domain_counts)
+    ref_domains = list(set(data_domains))
+    print("ref_domains", ref_domains)
+    training_domains = ref_domains.copy()
+    training_domains.remove(4)
+    domain_masks = deep_utils.calc_domain_mask(data_domains, data_labels)
+
+    data_domains = deep_utils.to_one_hot(data_domains, len(ref_domains))
+
+    data_ages = data_ages[:, np.newaxis] / 100.0
+    data_sexes = data_sexes[:, np.newaxis]
+
+    test_size = len(test_inds)
+    val_size = len(val_inds)
+    train_size = len(train_inds)
+
+
+    val_data = []
+    for ind in val_inds:
+        val_data.append(data_signals[ind])
+
+    test_data = []
+    for ind in test_inds:
+        test_data.append(data_signals[ind])
+        
+    np.save(output_directory + "/class_names.npy", class_names)
+
+    num_classes = len(class_names)
+    print("num classes", num_classes)
+
     # Assuming test_names.npy and val_names.npy contain paths to the respective files
     test_names = np.load("test_val_names/test_names.npy")
     val_names = np.load("test_val_names/val_names.npy")
 
     # Creating datasets
     num_classes = len(class_names)
-
-    val_size = int(0.1 * len(header_files))  # Assuming 20% for validation
-    val_files = header_files[:val_size]
-    train_files = header_files[val_size:]
-
-    val_dataset = tf_dataset_from_files(val_files, class_names, num_classes, Length, batch_size)
-    train_dataset = tf_dataset_from_files(train_files, class_names, num_classes, Length, batch_size)
     
+    def make_dataset(indices, fetch_data, batch_size):
+        def generator():
+            Xs, AGEs, SEXs, class_outputs, domain_outputs, Y_Ws, D_Ms, Y_Ds = [], [], [], [], [], [], [], []
+            inds = []
+            for ind in indices:
+                inds.append(ind)
+                data = fetch_data(ind)
+                Xs.append(data[0]['X'])
+                AGEs.append(data[0]['AGE'])
+                SEXs.append(data[0]['SEX'])
+                class_outputs.append(data[1]['class_output'])
+                domain_outputs.append(data[1]['domain_output'])
+                Y_Ds.append(data[1]['Y_D'])
+                if len(Xs) >= batch_size:
+                    Xs = deep_utils.prepare_data(Xs, Length)
+                    Y_W = deep_utils.calc_weights(class_outputs[:batch_size], class_weights)
+                    D_M = domain_masks[inds[:batch_size]].copy()
+                    yield {"X": Xs, "AGE": np.array(AGEs), "SEX": np.array(SEXs)}, {"class_output": np.array(class_outputs), "domain_output": np.array(domain_outputs), "Y_W": np.array(Y_W), "D_M": np.array(D_M), "Y_D": np.array(Y_Ds)}
+                    Xs, AGEs, SEXs, class_outputs, domain_outputs, Y_Ws, D_Ms, Y_Ds = [], [], [], [], [], [], [], []
     
+        return tf.data.Dataset.from_generator(generator, output_signature=(
+            {
+                "X": tf.TensorSpec(shape=(None, None, 12), dtype=tf.float32),
+                "AGE": tf.TensorSpec(shape=(None,1), dtype=tf.float32),
+                "SEX": tf.TensorSpec(shape=(None,1), dtype=tf.float32)
+            },
+            {
+                "class_output": tf.TensorSpec(shape=(None, num_classes), dtype=tf.float32),
+                "domain_output": tf.TensorSpec(shape=(None,len(ref_domains)), dtype=tf.float32),
+                "Y_W": tf.TensorSpec(shape=(None,num_classes), dtype=tf.float32),
+                "D_M": tf.TensorSpec(shape=(None,num_classes), dtype=tf.float32),
+                "Y_D": tf.TensorSpec(shape=(None,len(ref_domains)), dtype=tf.float32)
+            }
+        ))
+        
+    def fetch_data(ind):
+        return (
+            {
+                "X": data_signals[ind],
+                "AGE": data_ages[ind],
+                "SEX": data_sexes[ind]
+            },
+            {
+                "class_output": data_labels[ind],
+                "domain_output": data_domains[ind],
+                "Y_D": data_domains[ind]
+            }
+        )
 
+    train_dataset = make_dataset(train_inds, fetch_data, batch_size)
+    val_dataset = make_dataset(val_inds, fetch_data, len(val_inds))
+    test_dataset = make_dataset(test_inds, fetch_data, len(test_inds))
+
+    logdir = "tensorboard/" + output_directory
+    summary_writer = tf.summary.create_file_writer(logdir)
     ##########################
 
     print("Elapsed:", time() - t0)
     print("Building model...")
     
+    class GradientReversal(tf.keras.layers.Layer):
+        def __init__(self, lambdaa_DG):
+            super(GradientReversal, self).__init__()
+            self.lambdaa_DG = lambdaa_DG
+
+        def call(self, inputs):
+            return inputs
+
+        def compute_output_shape(self, input_shape):
+            return input_shape
+
+        def get_config(self):
+            config = super().get_config().copy()
+            config.update({
+                'lambdaa_DG': self.lambdaa_DG,
+            })
+            return config
+
+        @tf.custom_gradient
+        def grad_reverse(x, lambdaa_DG):
+            y = tf.identity(x)
+            def custom_grad(dy):
+                return -lambdaa_DG * dy, None
+            return y, custom_grad
+    
     def create_model(input_shape, num_classes, dropout_rate, num_domains):
         # Inputs
-        X_input = Input(shape=input_shape, name="X")
-        AGE_input = Input(shape=(1,), name="AGE")
-        SEX_input = Input(shape=(1,), name="SEX")
+        AGE_input = tf.keras.Input(shape=(1,), dtype=tf.float32, name="AGE")
+        SEX_input = tf.keras.Input(shape=(1,), dtype=tf.float32, name="SEX")
+        X_input = tf.keras.Input(shape=(Length, 12), dtype=tf.float32, name="X")
+
+        # Outputs and weights
+        Y_input = tf.keras.Input(shape=(num_classes,), dtype=tf.float32, name="Y")
+        Y_W_input = tf.keras.Input(shape=(num_classes,), dtype=tf.float32, name="Y_W")
+        D_M_input = tf.keras.Input(shape=(num_classes,), dtype=tf.float32, name="D_M")
+        Y_D_input = tf.keras.Input(shape=(len(ref_domains),), dtype=tf.float32, name="Y_D")
+                
         
         # First Convolutional Block
         e1 = Conv1D(filters=48, kernel_size=9, strides=4, padding="valid", activation="relu")(X_input)
@@ -218,68 +262,139 @@ def train_12ECG_classifier(input_directory, output_directory):
         x = Dropout(dropout_rate)(x)
         out_a = Dense(num_classes, activation="sigmoid", name="class_output")(x)
         
-        # Dense Layers for Domain Adaptation
-        domain_adaptation = Dense(64, activation="relu")(concatenated)
+        # Dense Layers for Domain Adaptation with gradient reversal layer
+        grl = GradientReversal(lambdaa_DG)(concatenated)
+        domain_adaptation = Dense(64, activation="relu")(grl)
         domain_adaptation = Dropout(dropout_rate)(domain_adaptation)
-        domain_output = Dense(num_domains, activation="softmax", name="domain_output")(domain_adaptation)
+        domain_output = Dense(num_domains, activation="sigmoid", name="domain_output")(domain_adaptation)
         
-        model = Model(inputs=[X_input, AGE_input, SEX_input], outputs=[out_a, domain_output])
-        
+        model = Model(inputs=[X_input, AGE_input, SEX_input, ], outputs=[out_a, domain_output])
+                
         return model
     
     model = create_model(input_shape=(Length, 12), num_classes=len(class_names), dropout_rate=0.5, num_domains=len(ref_domains))
-
-    def custom_sigmoid_cross_entropy_with_logits(y_true, y_pred):
-        loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=y_true, logits=y_pred)
-        return tf.reduce_mean(loss)
+    # Define the optimizer
+    optimizer = tf.keras.optimizers.Adam()
     
-
-    def recall_m_factory(threshold):
-        def recall_m(y_true, y_pred):
-            true_positives = K.sum(K.round(K.clip(y_true * K.cast(y_pred >= threshold, 'float32'), 0, 1)))
-            possible_positives = K.sum(K.round(K.clip(y_true, 0, 1)))
-            recall = true_positives / (possible_positives + K.epsilon())
-            return recall
-        recall_m.__name__ = 'recall_m_{}'.format(threshold)
-        return recall_m
-
-    def precision_m_factory(threshold):
-        def precision_m(y_true, y_pred):
-            true_positives = K.sum(K.round(K.clip(y_true * K.cast(y_pred >= threshold, 'float32'), 0, 1)))
-            predicted_positives = K.sum(K.round(K.clip(K.cast(y_pred >= threshold, 'float32'), 0, 1)))
-            precision = true_positives / (predicted_positives + K.epsilon())
-            return precision
-        precision_m.__name__ = 'precision_m_{}'.format(threshold)
-        return precision_m
-
-    def f1_m_factory(threshold):
-        def f1_m(y_true, y_pred):
-            precision = precision_m_factory(threshold)(y_true, y_pred)
-            recall = recall_m_factory(threshold)(y_true, y_pred)
-            return 2 * ((precision * recall) / (precision + recall + K.epsilon()))
-        f1_m.__name__ = 'f1_m_{}'.format(threshold)
-        return f1_m
-
-    threshold = tf.Variable(0.5, trainable=False, dtype=tf.float32)  # Initial threshold value
-
-    model.compile(
-        optimizer=Adam(1.2e-3),
-        loss={'class_output': custom_sigmoid_cross_entropy_with_logits, 'domain_output': 'categorical_crossentropy'},
-        loss_weights={'class_output': 1.0, 'domain_output': 0.1},
-        metrics={
-            'class_output': [
-                partial(f1_m_factory(threshold)),
-                'accuracy'
-            ],
-            'domain_output': 'accuracy'
-        }
-    )
-
-    history = model.fit(train_dataset,
-                        epochs=20,
-                        batch_size=batch_size,
-                        validation_data=val_dataset)
-
-
+    def masked_sigmoid_cross_entropy(y_true, y_pred, mask):
+        loss = tf.nn.sigmoid_cross_entropy_with_logits(logits=y_pred, labels=y_true)
+        masked_loss = tf.multiply(loss, mask)
+        return tf.reduce_mean(masked_loss)
     
-    model.save(output_directory + "/model.h5")
+    # Define the loss functions (sigmoid cross-entropy with logits)
+    class_loss_fn = masked_sigmoid_cross_entropy
+    domain_loss_fn = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
+    
+    class CustomMetric(tf.keras.metrics.Metric):
+        def __init__(self, num_classes, class_weights, class_names, step_size=0.01, name="custom_metric", **kwargs):
+            super().__init__(name=name, **kwargs)
+            self.class_weights = class_weights
+            self.class_names = class_names
+            self.thresholds = self.add_weight(name="thresholds", shape=(num_classes,), initializer=tf.keras.initializers.Constant(0.1))
+            self.total = self.add_weight(name="total", initializer="zeros")
+            self.step_size = tf.fill((num_classes,), step_size)
+    
+        def update_state(self, y_true, y_pred, sample_weight=None):
+            # Apply the thresholds to y_pred
+            y_pred_thresholded = tf.cast(y_pred >= self.thresholds, y_true.dtype)
+    
+            def compute_metric(y_true, y_pred_thresholded):
+                return evaluate_12ECG_score.compute_challenge_metric(self.class_weights, y_true, y_pred_thresholded, list(self.class_names), "426783006")
+    
+            metric_value = tf.py_function(compute_metric, [y_true, y_pred_thresholded], tf.float32)
+            self.total.assign_add(metric_value)
+    
+            # Check the score at the current thresholds, and at 0.01 higher and lower
+            scores = []
+            for delta in [-self.step_size, 0, self.step_size]:
+                y_pred_thresholded = tf.cast(y_pred >= (self.thresholds + delta), y_true.dtype)
+    
+                score = tf.py_function(compute_metric, [y_true, y_pred_thresholded], tf.float32)
+                scores.append(score)
+    
+            # Move in the direction that increases the score
+            if scores[0] > scores[1]:
+                self.thresholds.assign_sub(self.step_size)
+            elif scores[2] > scores[1]:
+                self.thresholds.assign_add(self.step_size)
+    
+        def result(self):
+            return self.total.value()
+    
+        def reset_states(self):
+            self.total.assign(0.0)
+            
+    val_metric = CustomMetric(num_classes, class_weights, class_names)
+    test_metric = CustomMetric(num_classes, class_weights, class_names)
+        
+    @tf.function
+    def train_step(X, AGE, SEX, Y, Y_W, D_M, Y_D, i):
+        
+        with tf.GradientTape() as tape:
+            # Forward pass
+            class_output, domain_output = model([X, AGE, SEX])
+    
+            # Calculate the mask
+            MASK = Y_W * D_M
+            # Calculate the losses
+            class_loss = class_loss_fn(Y, class_output, MASK)
+            domain_loss = domain_loss_fn(Y_D, domain_output)
+    
+            # Calculate the total loss
+            total_loss = class_loss + 0.1 * domain_loss
+    
+        # Calculate the gradients
+        gradients = tape.gradient(total_loss, model.trainable_variables)
+    
+        # Update the weights
+        optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+        
+        # Log the metrics
+        with summary_writer.as_default():
+            tf.summary.scalar("Loss", class_loss, step=i)
+            tf.summary.scalar("Domain_Loss", domain_loss, step=i)
+        
+
+            
+    def evaluate(X, AGE, SEX, Y, Y_W, D_M, Y_D, metric):
+        class_output, domain_output = model([X, AGE, SEX])
+        metric.update_state(Y, class_output)
+        
+    
+    # Training loop
+    for epoch in range(epoch_size):
+        print(f"Epoch {epoch + 1}/{epoch_size}")
+        for i, batch in enumerate(train_dataset):
+            inputs, labels = batch
+            X, AGE, SEX = inputs['X'], inputs['AGE'], inputs['SEX']
+            Y, Y_W, D_M, Y_D = labels['class_output'], labels['Y_W'], labels['D_M'], labels['Y_D']
+            
+            train_step(X, AGE, SEX, Y, Y_W, D_M, Y_D, epoch * len(train_inds) + i)
+            
+            # Evaluate the model every n_step batches
+            if i % n_step == 0:
+                #get current batch of validation data
+                val_batch = next(iter(val_dataset))
+                inputs_val, labels_val = val_batch
+                X_val, AGE_val, SEX_val = inputs_val['X'], inputs_val['AGE'], inputs_val['SEX']
+                Y_val, Y_W_val, D_M_val, Y_D_val = labels_val['class_output'], labels_val['Y_W'], labels_val['D_M'], labels_val['Y_D']
+                
+                evaluate(X_val, AGE_val, SEX_val, Y_val, Y_W_val, D_M_val, Y_D_val, val_metric)
+                
+                #get current batch of test data
+                test_batch = next(iter(test_dataset))
+                inputs_test, labels_test = test_batch
+                X_test, AGE_test, SEX_test = inputs_test['X'], inputs_test['AGE'], inputs_test['SEX']
+                Y_test, Y_W_test, D_M_test, Y_D_test = labels_test['class_output'], labels_test['Y_W'], labels_test['D_M'], labels_test['Y_D']
+                evaluate(X_test, AGE_test, SEX_test, Y_test, Y_W_test, D_M_test, Y_D_test, test_metric)
+                # Log the metrics
+                with summary_writer.as_default():
+                    tf.summary.scalar("val_score", val_metric.result(), step=i)
+                    tf.summary.scalar("test_score", test_metric.result(), step=i)
+            
+        # Log the epoch
+        print(f"Validation score: {val_metric.result().numpy()}")
+        print(f"Test score: {test_metric.result().numpy()}")
+        
+
+    model.save(output_directory + "/model.keras")

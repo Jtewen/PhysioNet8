@@ -2,6 +2,7 @@ import os
 import numpy as np
 import csv
 import tensorflow as tf
+from tensorflow.compat.v1.summary import merge_all, scalar, FileWriter
 
 # from matplotlib import pyplot as plt
 import deep_utils
@@ -9,103 +10,102 @@ import evaluate_12ECG_score
 from time import time
 from tensorflow import keras
 from tqdm import tqdm
-import glob
+from collections import Counter
+
 
 
 def train_12ECG_classifier(input_directory, output_directory):
 
     tf.compat.v1.disable_eager_execution()
 
-    seed, epoch_size, learning_rate, Length, lambdaa_d, lambdaa_DG, batch_size, n_step, N_data = 0, 100, 8e-4, 5600, 1e-1, 1e-3, 128, 80, 10000
+    logdir = "tensorboard/" + output_directory
+    summary_writer = FileWriter(logdir)
+
+    seed = 0
     np.random.seed(seed)
 
+    epoch_size = 100
+
+    learning_rate = 8e-4
+    Length = 3000
+
+    lambdaa_d = 1e-1
+
+    lambdaa_DG = 1e-3
+
+    batch_size = 128
+
+    n_step = 80
+
+    #######
+    N_data = 10000
+    dict_path = "datasets/dict_data"
+    #######
+
     print("Loading data...")
+
     t0 = time()
 
-    class_names = np.genfromtxt("weights.csv", delimiter=",", max_rows=1, dtype=str)[1:]
+    with open("weights.csv") as fp:
+        reader = csv.reader(fp, delimiter=",")
+        data_read = [row for row in reader]
+
+    class_names = data_read[0][1:]
+    class_weights = np.array(data_read[1:]).astype("float32")[:, 1:]
+
+    if not os.path.exists(output_directory):
+        os.makedirs(output_directory)
+
+    np.save(output_directory + "/class_names.npy", class_names)
+
     num_classes = len(class_names)
-    class_weights = np.genfromtxt("weights.csv", delimiter=",", skip_header=1, dtype=float)[:, 1:]
-
-    os.makedirs(output_directory, exist_ok=True)
-    np.save(f"{output_directory}/class_names.npy", class_names)
-
-    header_files = glob.glob(f"{input_directory}/*.hea")
-    num_files = len(header_files)
-    print("num files", num_files)
-
-    data_signals, data_names, data_ages, data_sexes, data_labels = [], [], [], [], []
-
-    for i in tqdm(range(num_files // 100), "Loading data..."):
-        recording, header = deep_utils.load_challenge_data(header_files[i])
-
-        if recording.shape[0] != 12:
-            print("Error in number of leads!", recording.shape)
-
-        recording = recording.T.astype("float32")
-
-        name = header[0].strip().split(" ")[0]
-
-        try:
-            samp_frq = int(header[0].strip().split(" ")[2])
-        except:
-            print("Error in reading sampling frequency!", header[0])
-            samp_frq = 500
-
-        if samp_frq != 500:
-            recording = deep_utils.resample(recording.copy(), samp_frq)
-
-        age = 50
-        sex = 0
-        label = np.zeros(num_classes, dtype="float32")
-
-        for l in header:
-            if l.startswith("# Age:"):
-                age_ = l.strip().split(" ")[2]
-                age = 50 if age_ in ["Nan", "NaN"] else int(age_)
-
-            if l.startswith("# Sex:"):
-                sex_ = l.strip().split(" ")[2].lower()
-                sex = 0 if sex_ in ["male", "m"] else 1 if sex_ in ["female", "f"] else print("Error in reading sex!", sex_)
-
-            if l.startswith("# Dx:"):
-                arrs = l.strip().split(" ")[2].split(",")
-                for arr in arrs:
-                    if arr.rstrip() in class_names:
-                        label[np.where(class_names == arr.rstrip())[0][0]] = 1.0
-        if np.sum(label) < 1:
-            continue
-
-        data_signals.append(recording)
-        data_names.append(name)
-        data_ages.append(age)
-        data_sexes.append(sex)
-        data_labels.append(label)
-
+    print("Loading data from files...")
+    data_signals, data_names, data_ages, data_sexes, data_labels = deep_utils.load_pickles("training/processed")
+    print("Data loaded successfully")
     data_names = np.array(data_names)
-    print("data_names", len(data_names))
     data_ages = np.array(data_ages, dtype="float32")
     data_sexes = np.array(data_sexes, dtype="float32")
     data_labels = np.array(data_labels, dtype="float32")
-    data_domains = deep_utils.find_domains(data_names)
-    print("data_domains", len(data_domains))
 
+    data_domains = deep_utils.find_domains(data_names)
+
+    data_domains = np.array(data_domains)
+    
+    print("data_domains", len(data_domains))
+    
+    
     ################################
 
-    test_names, val_names = np.load("test_val_names/test_names.npy"), np.load("test_val_names/val_names.npy")
-    test_inds, val_inds = np.where(np.in1d(data_names, test_names))[0], np.where(np.in1d(data_names, val_names))[0]
-    train_inds = np.delete(np.arange(len(data_names)), np.concatenate([test_inds, val_inds]))
-
+    test_names = np.load("test_val_names/test_names.npy")
+    val_names = np.load("test_val_names/val_names.npy")
+    test_inds = domain_4_inds = np.where(data_domains == 4)[0]
+    val_inds = np.where(np.in1d(data_names, val_names))[0]
+    train_inds = np.delete(
+        np.arange(len(data_names)), np.concatenate([test_inds, val_inds])
+    )
+    
+    domain_counts = Counter(data_domains)
+    print(domain_counts)
     ref_domains = list(set(data_domains))
+    print("ref_domains", ref_domains)
     domain_masks = deep_utils.calc_domain_mask(data_domains, data_labels)
+
     data_domains = deep_utils.to_one_hot(data_domains, len(ref_domains))
 
-    data_ages = data_ages[:, np.newaxis] / 100.
+    data_ages = data_ages[:, np.newaxis] / 100.0
     data_sexes = data_sexes[:, np.newaxis]
 
-    test_size, val_size, train_size = len(test_inds), len(val_inds), len(train_inds)
+    test_size = len(test_inds)
+    val_size = len(val_inds)
+    train_size = len(train_inds)
 
-    val_data = [data_signals[ind] for ind in val_inds]
-    test_data = [data_signals[ind] for ind in test_inds]
+    val_data = []
+    for ind in val_inds:
+        val_data.append(data_signals[ind])
+
+    test_data = []
+    for ind in test_inds:
+        test_data.append(data_signals[ind])
 
     ##########################
 
@@ -123,6 +123,10 @@ def train_12ECG_classifier(input_directory, output_directory):
     Y_W = tf.compat.v1.placeholder(tf.float32, [None, num_classes], name="Y_W")
     D_M = tf.compat.v1.placeholder(tf.float32, [None, num_classes], name="D_M")
     Y_D = tf.compat.v1.placeholder(tf.float32, [None, len(ref_domains)], name="Y_D")
+
+    lambda_d_ph = tf.compat.v1.placeholder(tf.float32, shape=(), name="lambda_d")
+    
+    score_ph = tf.compat.v1.placeholder(tf.float32, name="score")
 
     KEEP_PROB = tf.compat.v1.placeholder_with_default(1.0, (), "KEEP_PROB")
 
@@ -175,7 +179,7 @@ def train_12ECG_classifier(input_directory, output_directory):
     print(e5_0.shape)
 
     emb2 = keras.layers.Bidirectional(
-        keras.layers.LSTM(128, recurrent_dropout=0.5, return_sequences=False)
+        keras.layers.GRU(64, recurrent_dropout=0.5, return_sequences=False)
     )(e5_0)
 
     emb = tf.concat([emb1, emb2, AGE, SEX], axis=1)
@@ -235,6 +239,13 @@ def train_12ECG_classifier(input_directory, output_directory):
     Loss_d = tf.reduce_mean(
         tf.nn.softmax_cross_entropy_with_logits(logits=logits_d, labels=Y_D)
     )
+    
+    # Logging
+    loss_summary = scalar('Loss', Loss)
+    loss_d_summary = scalar('Domain_Loss', Loss_d)
+    score_summary = scalar('Test_Score', score_ph)
+    
+    merged_summary = main_summary = tf.compat.v1.summary.merge([loss_summary, loss_d_summary])
 
     opt = tf.compat.v1.train.AdamOptimizer(learning_rate=learning_rate)
 
@@ -255,6 +266,13 @@ def train_12ECG_classifier(input_directory, output_directory):
 
 
     print("Training model...")
+    
+    def adjust_lambda(epoch, start_epoch=0, base_lambda=lambdaa_d, max_lambda=1.0, ramp_up_epochs=50):
+        if epoch < start_epoch:
+            return base_lambda
+        elif epoch < start_epoch + ramp_up_epochs:
+            return base_lambda + (max_lambda - base_lambda) * ((epoch - start_epoch) / ramp_up_epochs)
+        return max_lambda
 
     def evaluate(data_x, data_y, data_m, data_a, data_s):
         loss_ce = []
@@ -324,6 +342,7 @@ def train_12ECG_classifier(input_directory, output_directory):
 
     # Training loop
     while epoch < epoch_size:
+        print("Epoch:", epoch)
         batch_inds = np.random.permutation(train_size)
         for b in range(n_b):
             batch_ind = batch_inds[b * batch_size : (b + 1) * batch_size]
@@ -332,7 +351,7 @@ def train_12ECG_classifier(input_directory, output_directory):
             train_batch = deep_utils.prepare_data(
                 [data_signals[train_inds[bb]] for bb in batch_ind], Length, mod=np.random.randint(0, 2)
             )
-
+    
             # Randomly crop the batch
             if np.random.rand() < 0.2:
                 train_batch = random_crop(train_batch.copy(), Length // 2)
@@ -349,15 +368,20 @@ def train_12ECG_classifier(input_directory, output_directory):
                 D_M: batch_mask,
                 AGE: data_ages[train_inds[batch_ind]],
                 SEX: data_sexes[train_inds[batch_ind]],
-                Y_D: data_domains[train_inds[batch_ind]],
+                Y_D: data_domains[train_inds[batch_ind]]
             }
 
             # Run training step
             sess.run(train_opt, feed)
+            
+            summary = sess.run(merged_summary, feed_dict=feed)
+            # Add the summary to the TensorBoard
+            summary_writer.add_summary(summary, step)
+
             step += 1
 
             # Validation and threshold adjustment
-            if epoch >= 20 and step % n_step == 0:
+            if epoch >= 10 and step % n_step == 0:
                 out, loss_ce = evaluate(val_data, data_labels[val_inds].copy(), domain_masks[val_inds].copy(), data_ages[val_inds].copy(), data_sexes[val_inds].copy())
                 labels_ = (out > threshold).astype(int)
                 score_v = evaluate_12ECG_score.compute_challenge_metric(class_weights, data_labels[val_inds][: len(out)].copy().astype(bool), labels_.astype(bool), list(class_names), "426783006")
@@ -384,8 +408,9 @@ def train_12ECG_classifier(input_directory, output_directory):
                     lbl_th = data_labels[test_inds][: len(out_th)].copy()
                     labels_ = (out_th > threshold).astype(int)
                     score = evaluate_12ECG_score.compute_challenge_metric(class_weights, lbl_th.astype(bool), labels_.astype(bool), list(class_names), "426783006")
-
                     if score > max_score_t:
+                        summary = sess.run(score_summary, feed_dict={score_ph: score})
+                        summary_writer.add_summary(summary, epoch)
                         print("score:", score)
                         max_score_t = score
                         name = "epoch_" + str(epoch) + "_score_" + str(int(100 * score))

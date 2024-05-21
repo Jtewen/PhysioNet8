@@ -630,7 +630,25 @@ def compute_challenge_metric(weights, labels, outputs, classes, normal_class):
     else:
         normalized_score = float("nan")
 
-    return normalized_score
+    # Calculate the F1 score
+    true_positives = np.sum(np.logical_and(outputs == 1, labels == 1))
+    false_positives = np.sum(np.logical_and(outputs == 1, labels == 0))
+    false_negatives = np.sum(np.logical_and(outputs == 0, labels == 1))
+
+    precision = true_positives / (true_positives + false_positives)
+    recall = true_positives / (true_positives + false_negatives)
+
+    f1 = 2 * (precision * recall) / (precision + recall)
+
+    return normalized_score, f1, precision, recall
+
+# compute AUROC, AUPRC, F-measure, F-beta measure, and G-beta measure
+def compute_metrics(labels, outputs):
+    auroc, auprc = compute_auc(labels, outputs)
+    accuracy = compute_accuracy(labels, outputs)
+    f_measure = compute_f_measure(labels, outputs)
+    f_beta_measure, g_beta_measure = compute_beta_measures(labels, outputs, beta=2)
+    return auroc, auprc, accuracy, f_measure, f_beta_measure, g_beta_measure
 
 
 if __name__ == "__main__":
