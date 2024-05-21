@@ -1,0 +1,10 @@
+import deep_utils
+data_signals, data_names, data_ages, data_sexes, data_labels, hr_mins, hr_maxs, rmssds = deep_utils.load_pickles("training/processed")
+print("Data loaded successfully")
+print("Number of samples:", len(data_signals))
+print("Number of labels:", len(data_labels))
+print("Number of ages:", len(data_ages))
+print("Number of sexes:", len(data_sexes))
+print("Number of hr_mins:", len(hr_mins))
+print("Number of hr_maxs:", len(hr_maxs))
+print("Number of rmssds:", len(rmssds))
