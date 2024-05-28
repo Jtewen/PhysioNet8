@@ -26,7 +26,7 @@ def main(args):
     print("Running training code...")
 
 
-    train_12ECG_classifier_baseline(input_directory, output_directory)
+    train_12ECG_classifier_resnet2(input_directory, output_directory)
 
     print("Done.")
 

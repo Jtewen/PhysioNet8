@@ -124,21 +124,11 @@ def train_12ECG_classifier_resnet2(input_directory, output_directory):
     D_M = tf.compat.v1.placeholder(tf.float32, [None, num_classes], name="D_M")
     Y_D = tf.compat.v1.placeholder(tf.float32, [None, len(ref_domains)], name="Y_D")
     
-    f1_t_ph = tf.compat.v1.placeholder(tf.float32, name="f1_t")
-    fb_t_ph = tf.compat.v1.placeholder(tf.float32, name="fb_t")
-    gb_t_ph = tf.compat.v1.placeholder(tf.float32, name="gb_t")
-    
-    f1_v_ph = tf.compat.v1.placeholder(tf.float32, name="f1_v")
-    fb_v_ph = tf.compat.v1.placeholder(tf.float32, name="fb_v")
-    gb_v_ph = tf.compat.v1.placeholder(tf.float32, name="gb_v")
     
     macro_auroc_t_ph = tf.compat.v1.placeholder(tf.float32, name="macro_auroc_t")
     micro_auprc_t_ph = tf.compat.v1.placeholder(tf.float32, name="micro_auprc_t")
     macro_auroc_v_ph = tf.compat.v1.placeholder(tf.float32, name="macro_auroc_v")
     micro_auprc_v_ph = tf.compat.v1.placeholder(tf.float32, name="micro_auprc_v")
-
-    accuracy_t_ph = tf.compat.v1.placeholder(tf.float32, name="accuracy_t")
-    accuracy_v_ph = tf.compat.v1.placeholder(tf.float32, name="accuracy_v")
 
     KEEP_PROB = tf.compat.v1.placeholder_with_default(1.0, (), "KEEP_PROB")
     
@@ -182,7 +172,7 @@ def train_12ECG_classifier_resnet2(input_directory, output_directory):
         conv7 = res_block(conv6, 512, stride=2, conv_shortcut=True, name=name + "_resblock7")
         conv8 = res_block(conv7, 512, name=name + "_resblock8")
                         
-        return [conv0, conv1, conv2, conv3, conv4, conv5, conv6, conv7, conv8]
+        return [conv1, conv2, conv3, conv4, conv5, conv6, conv7, conv8]
 
     feature_maps = create_resnet18(X)
 
@@ -195,7 +185,7 @@ def train_12ECG_classifier_resnet2(input_directory, output_directory):
     # Adjust and concatenate feature maps
     extracted_features = []
     for i, fmap in enumerate(feature_maps):
-        adjusted_feature = extraction_pipeline(fmap, filters=64, name=f"extraction_{i}")
+        adjusted_feature = extraction_pipeline(fmap, filters=128, name=f"extraction_{i}")
         extracted_features.append(adjusted_feature)
 
     # Concatenate all adjusted feature maps
@@ -218,20 +208,24 @@ def train_12ECG_classifier_resnet2(input_directory, output_directory):
                 return -self.lambda_ * dy
             return x, grad
     
-    reversed_emb = GradientReversal(1e-3)(emb)
-
     # Primary task gate layer
     g_y = tf.keras.layers.Dense(emb.shape[-1], activation="sigmoid")(emb)
     gated_emb_y = tf.multiply(emb, g_y)
-    d_y = tf.keras.layers.Dense(100, activation="relu")(gated_emb_y)
+    d_y = tf.keras.layers.Dense(100, activation="relu")(emb)
     dropout_a_y = tf.keras.layers.Dropout(0.5)(d_y)
     logits = tf.keras.layers.Dense(num_classes)(dropout_a_y)
     preds = tf.nn.sigmoid(logits, name="out_a")
+    
+    # # Adversarial Domain Classification on the primary task gate layer
+    grl = GradientReversal(0.04)
+    emb_grl = grl(gated_emb_y)
+    d_y_d = tf.keras.layers.Dense(100, activation="relu")(emb_grl)
+    logits_d_y = tf.keras.layers.Dense(len(ref_domains))(d_y_d)    
 
     
-    # Domain classification gate layer
-    g_d = tf.keras.layers.Dense(emb.shape[-1], activation="sigmoid")(reversed_emb)
-    gated_emb_d = tf.multiply(reversed_emb, g_d)
+    # # Domain classification gate layer
+    g_d = tf.keras.layers.Dense(emb.shape[-1], activation="sigmoid")(emb)
+    gated_emb_d = tf.multiply(emb, g_d)
     d_d = tf.keras.layers.Dense(100, activation="relu")(gated_emb_d)
     dropout_d_d = tf.keras.layers.Dropout(0.5)(d_d)
     logits_d = tf.keras.layers.Dense(len(ref_domains))(dropout_d_d)
@@ -264,41 +258,35 @@ def train_12ECG_classifier_resnet2(input_directory, output_directory):
         tf.nn.softmax_cross_entropy_with_logits(logits=logits_d, labels=Y_D)
     )
     
+    Loss_y_d = tf.reduce_mean(
+        tf.nn.softmax_cross_entropy_with_logits(logits=logits_d_y, labels=Y_D)
+    )
+    
     # Compute orthogonal loss on gate scores
     g_y_norm = tf.nn.l2_normalize(g_y, axis=-1)
     g_d_norm = tf.nn.l2_normalize(g_d, axis=-1)
     Loss_o = tf.reduce_mean(tf.square(tf.reduce_sum(tf.multiply(g_y_norm, g_d_norm), axis=-1)))
 
-    # Logging
+    # # Logging
     loss_summary = scalar('Loss', Loss)
     loss_d_summary = scalar('Domain_Loss', Loss_d)
+    loss_y_d_summary = scalar('Domain_Loss_Y', Loss_y_d)
     loss_o_summary = scalar('Orthogonal_Loss', Loss_o)
     
-    merged_summary = main_summary = tf.compat.v1.summary.merge([loss_summary, loss_d_summary, loss_o_summary])
-
-
-    accuracy_t_summary = scalar('Test_Accuracy', accuracy_t_ph)
-    f1_t_summary = scalar('Test_F1', f1_t_ph)
-    fb_t_summary = scalar('Test_Fbeta', fb_t_ph)
-    gb_t_summary = scalar('Test_Gbeta', gb_t_ph)
-    accuracy_v_summary = scalar('Val_Accuracy', accuracy_v_ph)
-    f1_v_summary = scalar('Val_F1', f1_v_ph)
-    fb_v_summary = scalar('Val_Fbeta', fb_v_ph)
-    gb_v_summary = scalar('Val_Gbeta', gb_v_ph)
+    merged_summary = main_summary = tf.compat.v1.summary.merge([loss_summary])
     
     macro_auroc_t_summary = scalar('Test_Macro_AUROC', macro_auroc_t_ph)
     micro_auprc_t_summary = scalar('Test_Micro_AUPRC', micro_auprc_t_ph)
     macro_auroc_v_summary = scalar('Val_Macro_AUROC', macro_auroc_v_ph)
     micro_auprc_v_summary = scalar('Val_Micro_AUPRC', micro_auprc_v_ph)
     
-    accuracy_t_summary = scalar('Test_Accuracy', accuracy_t_ph)
-    accuracy_v_summary = scalar('Val_Accuracy', accuracy_v_ph)
 
-    metric_summary = tf.compat.v1.summary.merge([accuracy_t_summary, f1_t_summary, fb_t_summary, gb_t_summary, accuracy_v_summary, f1_v_summary, fb_v_summary, gb_v_summary, macro_auroc_t_summary, micro_auprc_t_summary, macro_auroc_v_summary, micro_auprc_v_summary])    
+    metric_summary = tf.compat.v1.summary.merge([macro_auroc_t_summary, micro_auprc_t_summary, macro_auroc_v_summary, micro_auprc_v_summary])   
 
     opt = tf.compat.v1.train.AdamOptimizer(learning_rate=lr)
 
-    Total_loss = Loss + 0.1 * Loss_d + 0.05 * Loss_o
+    Total_loss = Loss + 0.02 * Loss_d + 0.1 * Loss_y_d + 0.05 * Loss_o
+    # Total_loss = Loss
 
     train_opt = opt.minimize(Total_loss)
 
@@ -338,22 +326,25 @@ def train_12ECG_classifier_resnet2(input_directory, output_directory):
         out = []
 
         n_b = len(data_y) // batch_size
+        remainder = len(data_y) % batch_size
 
-        for bb in range(n_b):
+        for bb in range(n_b + 1):
 
-            batch_data0 = []
-            for bbbb in range(bb * batch_size, (bb + 1) * batch_size):
-                batch_data0.append(data_x[bbbb])
+            # Calculate the start and end indices for the batch
+            start = bb * batch_size
+            end = (bb + 1) * batch_size if bb < n_b else start + remainder
+
+            batch_data0 = [data_x[i] for i in range(start, end)]
 
             batch_data = deep_utils.prepare_data(
                 batch_data0, Length, mod=np.random.randint(0, 2), aug=False
             )
 
-            batch_label = data_y[bb * batch_size : (bb + 1) * batch_size]
+            batch_label = data_y[start:end]
             batch_weight = deep_utils.calc_weights(batch_label, class_weights)
-            batch_mask = data_m[bb * batch_size : (bb + 1) * batch_size]
-            batch_age = data_a[bb * batch_size : (bb + 1) * batch_size]
-            batch_sex = data_s[bb * batch_size : (bb + 1) * batch_size]
+            batch_mask = data_m[start:end]
+            batch_age = data_a[start:end]
+            batch_sex = data_s[start:end]
             loss_ce_, out_ = sess.run(
                 [Loss, "out_a:0"],
                 feed_dict={
@@ -382,8 +373,8 @@ def train_12ECG_classifier_resnet2(input_directory, output_directory):
 
     saver = tf.compat.v1.train.Saver()
 
-    max_fb = 0.01
-    max_fb_t = 0.01
+    max_auroc = 0.01
+    max_auroc_t = 0.01
 
     scores = []
 
@@ -426,22 +417,22 @@ def train_12ECG_classifier_resnet2(input_directory, output_directory):
             step += 1
 
             # Validation
-            if epoch >= 5 and step % n_step == 0:
+            if epoch >= 0 and step % n_step == 0:
                 out, loss_ce = evaluate(val_data, data_labels[val_inds].copy(), domain_masks[val_inds].copy(), data_ages[val_inds].copy(), data_sexes[val_inds].copy())
-                macro_auroc_v, micro_auprc_v, accuracy_v, f1_v, fb_v, gb_v = evaluate_12ECG_score.compute_metrics(data_labels[val_inds], out)
+                macro_auroc_v, micro_auprc_v = evaluate_12ECG_score.compute_metrics(data_labels[val_inds], out)
                 if step % (1 * n_step) == 0:
                     # Evaluation on test data
                     out_th, _ = evaluate(test_data, data_labels[test_inds].copy(), domain_masks[test_inds].copy(), data_ages[test_inds].copy(), data_sexes[test_inds].copy())
                     lbl_th = data_labels[test_inds][: len(out_th)].copy()
-                    macro_auroc_t, micro_auprc_t, accuracy_t, f1_t, fb_t, gb_t = evaluate_12ECG_score.compute_metrics(lbl_th, out_th)
-                    if fb_t > max_fb_t:
-                        print("F-beta score:", fb_t)
-                        max_fb_t = fb_t
-                        name = "epoch_" + str(epoch) + "_score_" + str(fb_t)
+                    macro_auroc_t, micro_auprc_t = evaluate_12ECG_score.compute_metrics(lbl_th, out_th)
+                    if macro_auroc_t > max_auroc_t:
+                        print("AUROC improved from", max_auroc_t, "to", macro_auroc_t)
+                        max_auroc_t = macro_auroc_t
+                        name = "epoch_" + str(epoch) + "_score_" + str(macro_auroc_t)
                         saver.save(sess, save_path=model_path + "/" + name)
-                    scores.append(fb_t)
-                    print("epoch:", epoch, "auroc:", macro_auroc_t, "auprc:", micro_auprc_t, "accuracy:", accuracy_t, "f1:", f1_t, "fb:", fb_t, "gb:", gb_t)
-                    summary_metrics = sess.run(metric_summary, feed_dict={f1_t_ph: f1_t, fb_t_ph: fb_t, gb_t_ph: gb_t, macro_auroc_t_ph: macro_auroc_t, micro_auprc_t_ph: micro_auprc_t, f1_v_ph: f1_v, fb_v_ph: fb_v, gb_v_ph: gb_v, macro_auroc_v_ph: macro_auroc_v, micro_auprc_v_ph: micro_auprc_v, accuracy_t_ph: accuracy_t, accuracy_v_ph: accuracy_v})
+                    scores.append(macro_auroc_t)
+                    print("epoch:", epoch, "auroc:", macro_auroc_t, "auprc:", micro_auprc_t)
+                    summary_metrics = sess.run(metric_summary, feed_dict={macro_auroc_t_ph: macro_auroc_t, micro_auprc_t_ph: micro_auprc_t, macro_auroc_v_ph: macro_auroc_v, micro_auprc_v_ph: micro_auprc_v})
                     summary_writer.add_summary(summary_metrics, step)
 
         np.save(log_path + "/scores", scores)

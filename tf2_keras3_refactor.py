@@ -68,7 +68,7 @@ def train_12ECG_classifier_tf2(input_directory, output_directory):
 
     num_classes = len(class_names)
     print("Loading data from files...")
-    data_signals, data_names, data_ages, data_sexes, data_labels = deep_utils.load_shuffled_pickles("training/processed")
+    data_signals, data_names, data_ages, data_sexes, data_labels = deep_utils.load_pickles("training/processed")
     print("Data loaded successfully")
     data_names = np.array(data_names)
     data_ages = np.array(data_ages, dtype="float32")

@@ -645,11 +645,7 @@ def compute_challenge_metric(weights, labels, outputs, classes, normal_class):
 # compute AUROC, AUPRC, F-measure, F-beta measure, and G-beta measure
 def compute_metrics(labels, outputs):
     auroc, auprc = compute_auc(labels, outputs)
-    accuracy = compute_accuracy(labels, outputs)
-    f_measure = compute_f_measure(labels, outputs)
-    f_beta_measure, g_beta_measure = compute_beta_measures(labels, outputs, beta=2)
-    return auroc, auprc, accuracy, f_measure, f_beta_measure, g_beta_measure
-
+    return auroc, auprc
 
 if __name__ == "__main__":
     (
